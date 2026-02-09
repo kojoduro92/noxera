@@ -1,0 +1,6 @@
+{
+  "shadowDb": "noxera_shadow",
+  "shadowUrl": "mysql://noxera:noxera_pass@127.0.0.1:3307/noxera_shadow",
+  "user": "noxera",
+  "pass": "noxera_pass"
+}

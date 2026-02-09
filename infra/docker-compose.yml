@@ -1,0 +1,14 @@
+services:
+  db:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: noxera
+      MYSQL_USER: noxera
+      MYSQL_PASSWORD: noxera
+    ports:
+      - "3306:3306"
+    volumes:
+      - noxera_mysql:/var/lib/mysql
+volumes:
+  noxera_mysql:

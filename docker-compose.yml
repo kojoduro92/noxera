@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: noxera_postgres
+    environment:
+      POSTGRES_USER: noxera
+      POSTGRES_PASSWORD: noxera
+      POSTGRES_DB: noxera
+    ports:
+      - "5432:5432"
+    volumes:
+      - noxera_pg:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    container_name: noxera_redis
+    ports:
+      - "6379:6379"
+
+volumes:
+  noxera_pg:

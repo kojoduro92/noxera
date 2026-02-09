@@ -1,0 +1,7 @@
+@import "tailwindcss";
+@import "@noxera/ui/styles/index.css";
+
+/* App-level globals (keep minimal) */
+html, body { height: 100%; }
+:root { color-scheme: light; }
+.dark { color-scheme: dark; }

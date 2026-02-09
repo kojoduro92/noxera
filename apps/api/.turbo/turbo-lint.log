@@ -1,0 +1,5 @@
+
+
+> api@0.0.1 lint /Users/emmanuel/Desktop/apps/noxera/apps/api
+> eslint -c eslint.config.mjs "{src,apps,libs,test}/**/*.ts" --fix
+

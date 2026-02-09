@@ -1,0 +1,281 @@
+import { BadRequestException, Body, Controller, Get, NotFoundException, Param, Patch, Post, Query } from "@nestjs/common";
+import { PrismaService } from "../prisma/this.prisma.service";
+import { FeaturesService } from "../features/features.service";
+const allowedStatus = new Set(["TRIAL", "ACTIVE", "PAST_DUE", "SUSPENDED", "CANCELLED"]);
+
+@Controller("admin/tenants")
+export class AdminTenantsController {
+
+  // SPRINT1_CREATE_TENANT
+  @Post()
+  async createTenant(@Body() body: Record<string, any>) {
+    const name = String(body?.name ?? "").trim();
+    if (!name) throw new BadRequestException("name is required");
+
+    const rand = Math.random().toString(36).slice(2, 8);
+    const slugify = (v: string) =>
+      v
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/(^-|-$)/g, "")
+        .slice(0, 40);
+
+    const slug = String(body?.slug ?? "").trim() || `${slugify(name)}-${rand}`;
+
+    // plan is required in your Prisma types (name, slug, plan). We'll infer default from schema if not provided.
+    const plan = String(body?.plan ?? "").trim() || this.inferDefaultTenantPlan();
+    if (!plan) throw new BadRequestException("plan is required");
+
+    const created = await this.prisma.tenant.create({
+      data: { name, slug, plan } as any,
+    });
+
+    return created;
+  }
+
+  private inferDefaultTenantPlan(): string | null {
+    try {
+      const fs2 = require("node:fs");
+      const path2 = require("node:path");
+
+      // Support both: running with cwd=apps/api OR running from repo root
+      const candidates = [
+        path2.join(process.cwd(), "prisma", "schema.prisma"),
+        path2.join(process.cwd(), "apps", "api", "prisma", "schema.prisma"),
+      ];
+
+      const schemaPath = candidates.find((p: string) => fs2.existsSync(p));
+      if (!schemaPath) return null;
+
+      const schema = fs2.readFileSync(schemaPath, "utf8");
+
+      // Find Tenant model block
+      const model = schema.match(/model\s+Tenant\s*\{([\s\S]*?)\n\}/m);
+      if (!model) return null;
+
+      const lines = model[1]
+        .split("\n")
+        .map((l: string) => l.trim())
+        .filter((l: string) => l && !l.startsWith("//"));
+
+      // Find plan line like: plan Plan @default(BASIC)
+      const planLine = lines.find((l: string) => l.startsWith("plan "));
+      if (!planLine) return null;
+
+      // If @default(X) exists, use it
+      const def = planLine.match(/@default\(([^)]+)\)/);
+      if (def) return def[1].trim();
+
+      // Otherwise infer enum type name (2nd token)
+      const parts = planLine.split(/\s+/);
+      const planType = (parts[1] || "").replace("?", "");
+      if (!planType) return null;
+
+      const builtins = new Set(["String","Int","BigInt","Boolean","DateTime","Float","Decimal","Json"]);
+      if (builtins.has(planType)) return null;
+
+      // Find enum block and pick first value
+      const reEnum = new RegExp("enum\\s+" + planType + "\\s*\\{([\\s\\S]*?)\\n\\}", "m");
+      const em = schema.match(reEnum);
+      if (!em) return null;
+
+      const vals = em[1]
+        .split("\n")
+        .map((x: string) => x.trim())
+        .filter((x: string) => x && !x.startsWith("//"))
+        .map((x: string) => x.split(/\s+/)[0]);
+
+      return vals[0] || null;
+    } catch {
+      return null;
+    }
+  }
+
+  constructor(private readonly prisma: PrismaService, private readonly features: FeaturesService) {}
+
+  @Get()
+  async list(
+    @Query("q") q?: string,
+    @Query("status") status?: string,
+    @Query("planTier") planTier?: string,
+    @Query("page") pageStr?: string,
+    @Query("pageSize") pageSizeStr?: string
+  ) {
+    const page = Math.max(1, parseInt(pageStr || "1", 10) || 1);
+    const pageSize = Math.min(100, Math.max(1, parseInt(pageSizeStr || "20", 10) || 20));
+    const skip = (page - 1) * pageSize;
+
+    const where: any = {};
+    if (q && q.trim()) {
+      const s = q.trim();
+      where.OR = [
+        { name: { contains: s } },
+        { id: { contains: s } },
+        { slug: { contains: s } },
+      ];
+    }
+    if (status) where.status = status;
+    if (planTier) where.plan = { tier: planTier };
+
+    const [total, itemsRaw] = await Promise.all([
+      this.prisma.tenant.count({ where }),
+      this.prisma.tenant.findMany({
+        where,
+        include: {
+          plan: true,
+          memberships: { where: { status: "ACTIVE" }, select: { id: true } },
+        },
+        orderBy: { createdAt: "desc" },
+        skip,
+        take: pageSize,
+      }),
+    ]);
+
+    const items = itemsRaw.map((t) => ({
+      id: t.id,
+      name: t.name,
+      slug: t.slug,
+      status: t.status,
+      planTier: t.plan.tier,
+      seatsLimit: t.seatsLimit,
+      seatsUsed: t.memberships.length,
+      createdAt: t.createdAt,
+      updatedAt: t.updatedAt,
+    }));
+
+    return {
+      page,
+      pageSize,
+      total,
+      items,
+    };
+  }
+
+  @Get(":id")
+  async detail(@Param("id") id: string) {
+    const t = await this.prisma.tenant.findUnique({
+      where: { id },
+      include: {
+        plan: true,
+        overrides: true,
+        memberships: { where: { status: "ACTIVE" }, select: { id: true } },
+      },
+    });
+    if (!t) throw new NotFoundException("Tenant not found");
+
+    const fx = await this.features.getTenantEffectiveFeatures(t.id);
+
+    return {
+      id: t.id,
+      name: t.name,
+      slug: t.slug,
+      status: t.status,
+      planTier: t.plan.tier,
+      seatsLimit: t.seatsLimit,
+      seatsUsed: t.memberships.length,
+      createdAt: t.createdAt,
+      updatedAt: t.updatedAt,
+      features: fx,
+    };
+  }
+
+  @Patch(":id/status")
+  async setStatus(@Param("id") id: string, @Body() body: any) {
+    const nextStatus = body?.status;
+    if (!allowedStatus.has(nextStatus)) {
+      throw new BadRequestException("Invalid status");
+    }
+
+    const tenant = await this.prisma.tenant.update({
+      where: { id },
+      data: {
+        status: nextStatus,
+        suspendedAt: nextStatus === "SUSPENDED" ? new Date() : null,
+        cancelledAt: nextStatus === "CANCELLED" ? new Date() : null,
+      },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        tenantId: tenant.id,
+        actorType: "SYSTEM",
+        action: "TENANT_STATUS_CHANGED",
+        entityType: "Tenant",
+        entityId: tenant.id,
+        success: true,
+        metadata: { status: nextStatus },
+      },
+    });
+
+    return { ok: true, tenantId: tenant.id, status: tenant.status };
+  }
+    // POST_ADMIN_TENANT_CREATE_SPRINT1
+  @Post()
+  async createTenant(@Body() body: Record<string, any>) {
+    const name = String(body?.name ?? '').trim();
+    if (!name) throw new BadRequestException('name is required');
+
+    const rand = Math.random().toString(36).slice(2, 8);
+    const slugify = (v: string) =>
+      v
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/(^-|-$)/g, '')
+        .slice(0, 40);
+
+    const { existsSync, readFileSync } = require('node:fs');
+    const { join } = require('node:path');
+
+    // Infer a VALID default for "plan" from prisma/schema.prisma (avoids invalid enum values)
+    const schemaPath = join(process.cwd(), 'prisma/schema.prisma');
+    let inferredPlan: string | null = null;
+
+    try {
+      if (existsSync(schemaPath)) {
+        const schema = readFileSync(schemaPath, 'utf8');
+
+        const model = schema.match(/model\s+Tenant\s*\{([\s\S]*?)\n\}/m);
+        if (model) {
+          const planLine = model[1]
+            .split('\n')
+            .map((l: string) => l.trim())
+            .find((l: string) => l.startsWith('plan ') && !l.startsWith('//'));
+
+          if (planLine) {
+            const parts = planLine.split(/\s+/);
+            const planType = (parts[1] || '').replace('?', '');
+
+            const builtins = new Set(['String','Int','BigInt','Boolean','DateTime','Float','Decimal','Json']);
+            if (planType && !builtins.has(planType)) {
+              const reEnum = new RegExp('enum\\s+' + planType + '\\s*\\{([\\s\\S]*?)\\n\\}', 'm');
+              const em = schema.match(reEnum);
+              if (em) {
+                const vals = em[1]
+                  .split('\n')
+                  .map((x: string) => x.trim())
+                  .filter((x: string) => x && !x.startsWith('//'))
+                  .map((x: string) => x.split(/\s+/)[0]);
+
+                inferredPlan = vals[0] || null;
+              }
+            }
+          }
+        }
+      }
+    } catch {}
+
+    const slug = String(body?.slug ?? '').trim() || `${slugify(name)}-${rand}`;
+    const plan = String(body?.plan ?? '').trim() || inferredPlan;
+
+    if (!plan) {
+      throw new BadRequestException('plan is required (could not infer default from schema.prisma)');
+    }
+
+    const data: any = { name, slug, plan };
+
+    const created = await this.this.prisma.tenant.create({ data: data as any });
+    return created;
+  }
+
+
+}

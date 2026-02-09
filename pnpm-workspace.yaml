@@ -1,0 +1,12 @@
+packages:
+  - apps/*
+  - packages/*
+
+onlyBuiltDependencies:
+  - '@firebase/util'
+  - '@nestjs/core'
+  - '@prisma/engines'
+  - prisma
+  - protobufjs
+  - sharp
+  - unrs-resolver

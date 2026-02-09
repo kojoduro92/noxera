@@ -1,0 +1,22 @@
+name: noxera
+services:
+  mariadb:
+    image: mariadb:11.4
+    container_name: noxera-mariadb
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: rootpass
+      MARIADB_DATABASE: noxera
+      MARIADB_USER: noxera
+      MARIADB_PASSWORD: noxera_pass
+    ports:
+      - "3307:3306"
+    volumes:
+      - noxera_mariadb_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+volumes:
+  noxera_mariadb_data:
